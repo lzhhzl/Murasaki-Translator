@@ -363,80 +363,51 @@ function repackZipArchive(
   try {
     console.log(`[repackWinZip] Repacking: ${zipPath}`);
 
-    runPowerShell(
-      `Expand-Archive -Path ${toPowerShellString(zipPath)} -DestinationPath ${toPowerShellString(extractedDirectory)} -Force`,
-    );
+    // electron-builder 26 生成的 zip 可能无法被 Expand-Archive 解压
+    // （静默产出空目录）。优先使用 Windows 自带的 bsdtar（tar.exe），
+    // 它能正确处理该格式；失败或解压为空时回退到 Expand-Archive。
+    let extracted = false;
+    try {
+      runPowerShell(
+        `tar.exe -xf ${toPowerShellString(zipPath)} -C ${toPowerShellString(extractedDirectory)}`,
+      );
+      extracted = readDirectoryEntries(extractedDirectory).length > 0;
+    } catch (tarError) {
+      console.log(`[repackWinZip] tar extraction failed: ${tarError.message}`);
+    }
+    if (!extracted) {
+      console.log("[repackWinZip] Falling back to Expand-Archive");
+      runPowerShell(
+        `Expand-Archive -Path ${toPowerShellString(zipPath)} -DestinationPath ${toPowerShellString(extractedDirectory)} -Force`,
+      );
+      extracted = readDirectoryEntries(extractedDirectory).length > 0;
+    }
+    if (!extracted) {
+      throw new Error(
+        `[repackWinZip] Zip extraction produced no files (zip: ${zipPath}). ` +
+          `The archive may be empty or in an unsupported format.`,
+      );
+    }
 
     const extractedEntries = readDirectoryEntries(extractedDirectory);
     const singleRootName = resolveAppSourceRootName(extractedEntries);
-    let appSourceRoot = singleRootName
+    const appSourceRoot = singleRootName
       ? path.join(extractedDirectory, singleRootName)
       : extractedDirectory;
 
-    // exe 查找：先查 appSourceRoot 顶层；为空时递归搜索整个解压目录。
-    // 递归时排除 python_env / middleware / resources / bin / build，
-    // 这些目录只会包含非应用 exe（llama-server.exe、python.exe 等）。
-    const isNonAppDirectory = (name) =>
-      /^(python_env|middleware|resources|bin|build)$/i.test(name);
-
-    const findExeMatches = (rootDir, depth) => {
-      const matches = [];
-      const walk = (dir, currentDepth) => {
-        if (currentDepth > depth) return;
-        for (const entry of readDirectoryEntries(dir)) {
-          if (entry.isDirectory()) {
-            if (isNonAppDirectory(entry.name)) continue;
-            walk(path.join(dir, entry.name), currentDepth + 1);
-          } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".exe")) {
-            matches.push({ name: entry.name, dir, depth: currentDepth });
-          }
-        }
-      };
-      walk(rootDir, 0);
-      return matches;
-    };
-
-    const describeTree = (rootDir, maxDepth) => {
-      const lines = [];
-      const walk = (dir, prefix, currentDepth) => {
-        if (currentDepth > maxDepth) return;
-        for (const entry of readDirectoryEntries(dir)) {
-          lines.push(`${prefix}${entry.name}${entry.isDirectory() ? "/" : ""}`);
-          if (entry.isDirectory()) {
-            walk(path.join(dir, entry.name), `${prefix}  `, currentDepth + 1);
-          }
-        }
-      };
-      walk(rootDir, "  ", 0);
-      return lines.join("\n");
-    };
-
-    let executableCandidates = findExeMatches(appSourceRoot, 0).map((m) => m.name);
-    if (executableCandidates.length === 0) {
-      const matches = findExeMatches(extractedDirectory, 3);
-      if (matches.length > 0) {
-        const preferredMatch = preferredExecutableName
-          ? matches.find(
-              (m) => m.name.toLowerCase() === preferredExecutableName.toLowerCase(),
-            )
-          : null;
-        const chosen =
-          preferredMatch ||
-          matches.sort((a, b) => a.depth - b.depth || a.name.localeCompare(b.name))[0];
-        appSourceRoot = chosen.dir;
-        executableCandidates = [chosen.name];
-      }
-    }
-
+    const executableCandidates = readDirectoryEntries(appSourceRoot)
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"))
+      .map((entry) => entry.name);
     const runtimeExecutableName = pickRuntimeExecutableName(
       executableCandidates,
       preferredExecutableName,
     );
 
     if (!runtimeExecutableName) {
+      const topLevelEntries = extractedEntries.map((e) => e.name).join(", ");
       throw new Error(
         `[repackWinZip] Runtime executable not found in: ${appSourceRoot}\n` +
-          `Extracted layout:\n${describeTree(extractedDirectory, 2)}`,
+          `Extracted top-level entries: ${topLevelEntries}`,
       );
     }
 
