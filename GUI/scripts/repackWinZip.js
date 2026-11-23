@@ -373,26 +373,58 @@ function repackZipArchive(
       ? path.join(extractedDirectory, singleRootName)
       : extractedDirectory;
 
-    const collectExecutableCandidates = (sourceRoot) =>
-      readDirectoryEntries(sourceRoot)
-        .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"))
-        .map((entry) => entry.name);
+    // exe 查找：先查 appSourceRoot 顶层；为空时递归搜索整个解压目录。
+    // 递归时排除 python_env / middleware / resources / bin / build，
+    // 这些目录只会包含非应用 exe（llama-server.exe、python.exe 等）。
+    const isNonAppDirectory = (name) =>
+      /^(python_env|middleware|resources|bin|build)$/i.test(name);
 
-    let executableCandidates = collectExecutableCandidates(appSourceRoot);
-
-    // 新版 electron-builder 的 zip target 会在根目录附带
-    // LICENSE.electron.txt / LICENSES.chromium.html 等散文件，
-    // 导致“唯一目录”判定失败。若根目录找不到 exe 且恰好存在唯一顶层目录，
-    // 则回退到该目录内查找应用可执行文件。
-    if (executableCandidates.length === 0 && !singleRootName) {
-      const fallbackFolders = extractedEntries.filter((entry) => entry.isDirectory());
-      if (fallbackFolders.length === 1) {
-        const fallbackRoot = path.join(extractedDirectory, fallbackFolders[0].name);
-        const fallbackCandidates = collectExecutableCandidates(fallbackRoot);
-        if (fallbackCandidates.length > 0) {
-          appSourceRoot = fallbackRoot;
-          executableCandidates = fallbackCandidates;
+    const findExeMatches = (rootDir, depth) => {
+      const matches = [];
+      const walk = (dir, currentDepth) => {
+        if (currentDepth > depth) return;
+        for (const entry of readDirectoryEntries(dir)) {
+          if (entry.isDirectory()) {
+            if (isNonAppDirectory(entry.name)) continue;
+            walk(path.join(dir, entry.name), currentDepth + 1);
+          } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".exe")) {
+            matches.push({ name: entry.name, dir, depth: currentDepth });
+          }
         }
+      };
+      walk(rootDir, 0);
+      return matches;
+    };
+
+    const describeTree = (rootDir, maxDepth) => {
+      const lines = [];
+      const walk = (dir, prefix, currentDepth) => {
+        if (currentDepth > maxDepth) return;
+        for (const entry of readDirectoryEntries(dir)) {
+          lines.push(`${prefix}${entry.name}${entry.isDirectory() ? "/" : ""}`);
+          if (entry.isDirectory()) {
+            walk(path.join(dir, entry.name), `${prefix}  `, currentDepth + 1);
+          }
+        }
+      };
+      walk(rootDir, "  ", 0);
+      return lines.join("\n");
+    };
+
+    let executableCandidates = findExeMatches(appSourceRoot, 0).map((m) => m.name);
+    if (executableCandidates.length === 0) {
+      const matches = findExeMatches(extractedDirectory, 3);
+      if (matches.length > 0) {
+        const preferredMatch = preferredExecutableName
+          ? matches.find(
+              (m) => m.name.toLowerCase() === preferredExecutableName.toLowerCase(),
+            )
+          : null;
+        const chosen =
+          preferredMatch ||
+          matches.sort((a, b) => a.depth - b.depth || a.name.localeCompare(b.name))[0];
+        appSourceRoot = chosen.dir;
+        executableCandidates = [chosen.name];
       }
     }
 
@@ -402,7 +434,10 @@ function repackZipArchive(
     );
 
     if (!runtimeExecutableName) {
-      throw new Error(`[repackWinZip] Runtime executable not found in: ${appSourceRoot}`);
+      throw new Error(
+        `[repackWinZip] Runtime executable not found in: ${appSourceRoot}\n` +
+          `Extracted layout:\n${describeTree(extractedDirectory, 2)}`,
+      );
     }
 
     const runtimeDirectory = path.join(stageDirectory, APP_DIR_NAME);
