@@ -673,10 +673,19 @@ jobs:
   release:
     needs: [build-win-cuda, build-win-vulkan, build-mac, build-linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # 打 tag 触发 → 正式 Release；手动 dispatch → 发布到滚动预发布 ci-build
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Determine release tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "RELEASE_TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=ci-build" >> "$GITHUB_ENV"
+          fi
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -695,9 +704,12 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: release-assets/*
           draft: false
-          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          # 手动构建始终为 prerelease；打 tag 时按 beta/alpha 判定
+          prerelease: ${{ github.event_name == 'workflow_dispatch' || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          make_latest: ${{ github.event_name == 'workflow_dispatch' && 'false' || 'true' }}
           generate_release_notes: true
           body: |
             ## 📦 下载说明
