@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
 try:
-    from openpyxl import load_workbook
+    from openpyxl import load_workbook as _load_workbook
 except ImportError:  # pragma: no cover - exercised via runtime guard
-    load_workbook = None
+    _load_workbook = None
+
+# 运行时可能为 None（由 _ensure_dependency 守卫），类型上视为可调用以通过 mypy
+load_workbook: Callable[..., Any] = cast(Callable[..., Any], _load_workbook)
 
 from .base import BaseDocument
 from murasaki_translator.core.anchor_guard import (
