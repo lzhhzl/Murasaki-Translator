@@ -208,7 +208,7 @@ jobs:
   # macOS Build (Universal)
   # ============================================
   build-mac:
-    runs-on: macos-14  # Apple Silicon runner
+    runs-on: macos-latest # Apple Silicon runner（macos-14 镜像已退役）
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -351,7 +351,7 @@ jobs:
   # Linux Build (GUI + CLI)
   # ============================================
   build-linux:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04 # ubuntu-22.04 镜像已进入退役流程
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -417,6 +417,12 @@ jobs:
           echo "=== CPU binaries ==="
           ls -la middleware/bin/linux-cpu/
           test -f middleware/bin/linux-cpu/llama-server && echo "✅ CPU llama-server found" || echo "❌ CPU llama-server NOT found"
+
+      - name: Install system dependencies
+        run: |
+          # ubuntu-24.04 基础镜像不含 libfuse2（electron-builder 构建 AppImage 需要）
+          sudo apt-get update
+          sudo apt-get install -y libfuse2
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
