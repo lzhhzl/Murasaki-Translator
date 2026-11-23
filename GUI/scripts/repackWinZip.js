@@ -369,13 +369,33 @@ function repackZipArchive(
 
     const extractedEntries = readDirectoryEntries(extractedDirectory);
     const singleRootName = resolveAppSourceRootName(extractedEntries);
-    const appSourceRoot = singleRootName
+    let appSourceRoot = singleRootName
       ? path.join(extractedDirectory, singleRootName)
       : extractedDirectory;
 
-    const executableCandidates = readDirectoryEntries(appSourceRoot)
-      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"))
-      .map((entry) => entry.name);
+    const collectExecutableCandidates = (sourceRoot) =>
+      readDirectoryEntries(sourceRoot)
+        .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"))
+        .map((entry) => entry.name);
+
+    let executableCandidates = collectExecutableCandidates(appSourceRoot);
+
+    // 新版 electron-builder 的 zip target 会在根目录附带
+    // LICENSE.electron.txt / LICENSES.chromium.html 等散文件，
+    // 导致“唯一目录”判定失败。若根目录找不到 exe 且恰好存在唯一顶层目录，
+    // 则回退到该目录内查找应用可执行文件。
+    if (executableCandidates.length === 0 && !singleRootName) {
+      const fallbackFolders = extractedEntries.filter((entry) => entry.isDirectory());
+      if (fallbackFolders.length === 1) {
+        const fallbackRoot = path.join(extractedDirectory, fallbackFolders[0].name);
+        const fallbackCandidates = collectExecutableCandidates(fallbackRoot);
+        if (fallbackCandidates.length > 0) {
+          appSourceRoot = fallbackRoot;
+          executableCandidates = fallbackCandidates;
+        }
+      }
+    }
+
     const runtimeExecutableName = pickRuntimeExecutableName(
       executableCandidates,
       preferredExecutableName,
